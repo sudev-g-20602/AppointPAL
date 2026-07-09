@@ -6,8 +6,10 @@ name: Sync Markdown to Zoho WorkDrive
 on:
   push:
     branches: [main]
-    paths:
-      - "**.md"      # added, modified, OR deleted .md all trigger this
+    paths:                 # any of these changing (added/modified/deleted) fires the run
+      - "**.md"
+      - "**.yaml"
+      - "**.yml"
 
 # If two merges land close together, run them one at a time so uploads/deletes
 # don't race; the later state wins.
@@ -32,7 +34,7 @@ jobs:
       - name: Install dependencies
         run: pip install requests
 
-      - name: Sync changed Markdown files to WorkDrive
+      - name: Sync changed files to WorkDrive
         env:
           # --- Secrets: Settings > Secrets and variables > Actions ---
           ZOHO_CLIENT_ID:           ${{ secrets.ZOHO_CLIENT_ID }}
@@ -44,10 +46,10 @@ jobs:
           ZOHO_ACCOUNTS_DOMAIN: https://accounts.zoho.in
           ZOHO_API_DOMAIN:      https://www.zohoapis.in
 
-          # --- Mirror deletions: removing a .md in Git moves it to WorkDrive Trash ---
+          # --- Mirror deletions: removing a file in Git moves it to WorkDrive Trash ---
           MIRROR_DELETES: "true"
 
           # --- Commit range for this push (provided automatically by GitHub) ---
           BEFORE_SHA: ${{ github.event.before }}
           AFTER_SHA:  ${{ github.event.after }}
-        run: python sync_to_workdrive.py
+        run: python scripts/sync_to_workdrive.py

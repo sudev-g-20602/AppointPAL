@@ -1,23 +1,26 @@
 #!/usr/bin/env python3
 """
-Sync changed Markdown files from a Git push to a single (flat) Zoho WorkDrive folder.
+Sync changed docs from a Git push to Zoho WorkDrive, mirroring the repo's folder tree.
 
 Behaviour
 ---------
 * Diffs the push's before/after commits, so only what changed is touched.
-* New / modified .md files are uploaded to WORKDRIVE_ROOT_FOLDER_ID.
-* Uses `override-name-exist=true`, so an existing filename is replaced in place
-  (same file id, shared links stay valid) rather than duplicated.
+* Recreates your repo's nested folder structure inside WorkDrive (find-or-create,
+  results cached so each folder is listed at most once per run).
+* New / modified files are uploaded with `override-name-exist=true`, so an existing
+  filename is replaced in place (same file id, shared links stay valid).
 * MIRROR_DELETES=true: files removed in Git are moved to WorkDrive Trash
   (status 61 -> recoverable from Trash, subject to your retention policy).
 
-Assumes a FLAT layout: all .md files live in one folder, no subdirectories.
+Which files sync: SYNC_SUFFIXES below. Currently .md + .yaml/.yml. To sync only
+Markdown, set SYNC_SUFFIXES = (".md",). Anything not matching (e.g. the .py script
+itself) is ignored, so empty tooling folders are never created in WorkDrive.
 
 Required environment variables (set as GitHub Actions secrets):
     ZOHO_CLIENT_ID
     ZOHO_CLIENT_SECRET
     ZOHO_REFRESH_TOKEN
-    WORKDRIVE_ROOT_FOLDER_ID   # the one WorkDrive folder everything syncs into
+    WORKDRIVE_ROOT_FOLDER_ID   # the WorkDrive folder that maps to your repo root
     BEFORE_SHA                 # provided by the workflow (github.event.before)
     AFTER_SHA                  # provided by the workflow (github.event.after)
 
@@ -30,6 +33,7 @@ Optional (defaults shown; India DC -> use the .in domains):
 import os
 import sys
 import subprocess
+from collections import defaultdict
 
 import requests
 
@@ -39,7 +43,7 @@ import requests
 CLIENT_ID      = os.environ["ZOHO_CLIENT_ID"]
 CLIENT_SECRET  = os.environ["ZOHO_CLIENT_SECRET"]
 REFRESH_TOKEN  = os.environ["ZOHO_REFRESH_TOKEN"]
-FOLDER_ID      = os.environ["WORKDRIVE_ROOT_FOLDER_ID"]
+ROOT_FOLDER_ID = os.environ["WORKDRIVE_ROOT_FOLDER_ID"]
 
 ACCOUNTS_DOMAIN = os.environ.get("ZOHO_ACCOUNTS_DOMAIN", "https://accounts.zoho.com").rstrip("/")
 API_DOMAIN      = os.environ.get("ZOHO_API_DOMAIN", "https://www.zohoapis.com").rstrip("/")
@@ -51,7 +55,12 @@ AFTER_SHA  = os.environ.get("AFTER_SHA", "").strip()
 WD_API    = f"{API_DOMAIN}/workdrive/api/v1"
 EMPTY_SHA = "0" * 40                       # GitHub's "before" on a first push
 JSON_API  = {"Accept": "application/vnd.api+json"}
-SYNC_SUFFIXES = (".md",)
+
+# Files to sync. Add/remove extensions here.
+SYNC_SUFFIXES = (".md", ".yaml", ".yml")
+
+# Cache: repo-relative dir ("" = root) -> WorkDrive folder id.
+_folder_cache = {"": ROOT_FOLDER_ID}
 
 
 # --------------------------------------------------------------------------- #
@@ -87,10 +96,10 @@ def _git(*args) -> str:
 
 
 def changed_files():
-    """Return (upserts, deletes) as lists of repo-relative .md paths."""
+    """Return (upserts, deletes) as lists of repo-relative paths we care about."""
     upserts, deletes = [], []
 
-    # First push to a new branch: no "before" -> every tracked .md counts as new.
+    # First push to a new branch: no "before" -> every tracked file counts as new.
     if not BEFORE_SHA or BEFORE_SHA == EMPTY_SHA:
         for path in _git("ls-tree", "-r", "--name-only", AFTER_SHA).split("\n"):
             path = path.strip()
@@ -98,7 +107,6 @@ def changed_files():
                 upserts.append(path)
         return upserts, deletes
 
-    # Normal push: rename-safe, NUL-separated diff.
     tokens = _git("diff", "--name-status", "-z", BEFORE_SHA, AFTER_SHA).split("\0")
     i = 0
     while i < len(tokens):
@@ -107,14 +115,14 @@ def changed_files():
             i += 1
             continue
         code = status[0]
-        if code in ("R", "C"):                    # status, old, new
+        if code in ("R", "C"):                     # status, old, new
             old_path, new_path = tokens[i + 1], tokens[i + 2]
             i += 3
             if new_path.endswith(SYNC_SUFFIXES):
                 upserts.append(new_path)
             if code == "R" and old_path.endswith(SYNC_SUFFIXES):
-                deletes.append(old_path)           # old name no longer exists
-        else:                                     # A / M / D / T: status, path
+                deletes.append(old_path)
+        else:                                      # A / M / D / T: status, path
             path = tokens[i + 1]
             i += 2
             if not path.endswith(SYNC_SUFFIXES):
@@ -125,14 +133,14 @@ def changed_files():
 
 
 # --------------------------------------------------------------------------- #
-# WorkDrive
+# WorkDrive: folders
 # --------------------------------------------------------------------------- #
-def list_folder(token: str):
-    """Yield (name, id, is_folder) for every item directly inside FOLDER_ID."""
+def list_children(token: str, folder_id: str):
+    """Yield (name, id, is_folder) for every item directly inside folder_id."""
     offset, limit = 0, 50
     while True:
         resp = requests.get(
-            f"{WD_API}/files/{FOLDER_ID}/files",
+            f"{WD_API}/files/{folder_id}/files",
             headers={**auth(token), **JSON_API},
             params={"page[limit]": limit, "page[offset]": offset},
             timeout=30,
@@ -150,14 +158,61 @@ def list_folder(token: str):
         offset += limit
 
 
-def upload_file(token: str, local_path: str):
+def find_child_folder(token: str, parent_id: str, name: str):
+    for child_name, child_id, is_folder in list_children(token, parent_id):
+        if is_folder and child_name == name:
+            return child_id
+    return None
+
+
+def create_folder(token: str, parent_id: str, name: str) -> str:
+    body = {"data": {"attributes": {"name": name, "parent_id": parent_id}, "type": "files"}}
+    resp = requests.post(
+        f"{WD_API}/files",
+        headers={**auth(token), **JSON_API, "Content-Type": "application/json"},
+        json=body,
+        timeout=30,
+    )
+    resp.raise_for_status()
+    return resp.json()["data"]["id"]
+
+
+def resolve_dir(token: str, rel_dir: str, create: bool = True):
+    """
+    Map a repo-relative directory (e.g. 'knowledge-base') to a WorkDrive folder id.
+    With create=False, return None if any segment doesn't exist yet.
+    """
+    rel_dir = rel_dir.strip("/")
+    if rel_dir in _folder_cache:
+        return _folder_cache[rel_dir]
+
+    parent_id, walked = ROOT_FOLDER_ID, ""
+    for segment in rel_dir.split("/"):
+        walked = f"{walked}/{segment}".strip("/")
+        if walked in _folder_cache:
+            parent_id = _folder_cache[walked]
+            continue
+        child = find_child_folder(token, parent_id, segment)
+        if child is None:
+            if not create:
+                return None
+            child = create_folder(token, parent_id, segment)
+        _folder_cache[walked] = child
+        parent_id = child
+    return parent_id
+
+
+# --------------------------------------------------------------------------- #
+# WorkDrive: upload + trash
+# --------------------------------------------------------------------------- #
+def upload_file(token: str, local_path: str, parent_id: str):
     filename = os.path.basename(local_path)
     with open(local_path, "rb") as fh:
         resp = requests.post(
             f"{WD_API}/upload",
             headers=auth(token),                       # requests sets multipart header
             params={
-                "parent_id": FOLDER_ID,
+                "parent_id": parent_id,
                 "filename": filename,                  # requests URL-encodes this
                 "override-name-exist": "true",         # replace in place, no duplicate
             },
@@ -189,30 +244,42 @@ def trash_files(token: str, file_ids):
 def main():
     upserts, deletes = changed_files()
     if not upserts and not deletes:
-        print("No Markdown changes to sync.")
+        print("No changes to sync.")
         return
 
     token = get_access_token()
 
     for path in upserts:
-        print(f"Uploading {os.path.basename(path)}")
-        upload_file(token, path)
+        parent_id = resolve_dir(token, os.path.dirname(path), create=True)
+        print(f"Uploading {path}")
+        upload_file(token, path, parent_id)
 
-    if deletes:
-        # One listing gives us a name -> id map for the whole folder.
-        name_to_id = {name: fid for name, fid, is_folder in list_folder(token)
-                      if not is_folder}
-        to_trash, missing = [], []
+    if MIRROR_DELETES and deletes:
+        # Group deletes by directory so each WorkDrive folder is listed once.
+        by_dir = defaultdict(list)
         for path in deletes:
-            fname = os.path.basename(path)
-            (to_trash.append(name_to_id[fname]) if fname in name_to_id
-             else missing.append(fname))
-        if to_trash:
-            print(f"Trashing {len(to_trash)} file(s): "
-                  f"{', '.join(os.path.basename(p) for p in deletes if os.path.basename(p) not in missing)}")
-            trash_files(token, to_trash)
+            by_dir[os.path.dirname(path)].append(os.path.basename(path))
+
+        trash_ids, missing = [], []
+        for rel_dir, names in by_dir.items():
+            folder_id = resolve_dir(token, rel_dir, create=False)
+            if folder_id is None:
+                missing.extend(names)
+                continue
+            name_to_id = {n: i for n, i, is_f in list_children(token, folder_id)
+                          if not is_f}
+            for name in names:
+                (trash_ids.append(name_to_id[name]) if name in name_to_id
+                 else missing.append(name))
+        if trash_ids:
+            print(f"Trashing {len(trash_ids)} file(s)")
+            trash_files(token, trash_ids)
         if missing:
-            print(f"Deleted in Git but not found in WorkDrive (skipped): {', '.join(missing)}")
+            print(f"Deleted in Git but not found in WorkDrive (skipped): "
+                  f"{', '.join(missing)}")
+    elif deletes:
+        print(f"{len(deletes)} file(s) deleted in Git, left untouched in WorkDrive "
+              f"(MIRROR_DELETES is off).")
 
     print("Sync complete.")
 
