@@ -82,7 +82,7 @@ Always retrieve the current service list **live from the Services module** (`Ser
 
 **List Services call:**
 - `module_api_name` = `Services__s` (EXACTLY — `"Services"` returns `INVALID_MODULE` 400)
-- `fields` = `id, Service_Name, Location, Job_Sheet_Required` plus the confirmed service-members field
+- `fields` = `id, Service_Name, Location, Job_Sheet_Required, Members`
 - Do not request all fields — unknown or excess fields return a 400 error.
 - `Service_Name` is the name field (not `"Name"` — that field does not exist in this module).
 
@@ -98,9 +98,7 @@ Always retrieve the current service list **live from the Services module** (`Ser
 | Service name | `Service_Name` | Name field (not `Name`) |
 | Location type | `Location` | `"Business Address"` or `"Client Address"` |
 | Job sheet required | `Job_Sheet_Required` | Boolean — if true and org mandates job sheets, required before completing |
-| Members | *(confirm exact field via Fields Metadata)* | List of user IDs eligible as providers |
-
-**Verify the members field name:** `GET /crm/v8/settings/fields?module=Services__s`. Never guess field names.
+| Members | `Members` | List of user IDs eligible as providers |
 
 ---
 
@@ -109,66 +107,25 @@ Always retrieve the current service list **live from the Services module** (`Ser
 ### Provider rule
 The `Owner` assigned to an appointment must be a **member of the chosen service**. A user not listed in the service's members field cannot be assigned — the CRM rejects this with `INVALID_DATA`.
 
-### Two-layer availability check (BOTH must pass before booking or rescheduling)
+### Availability check (required before every booking or rescheduling)
 
-Before confirming any slot, run both checks. Skipping either is not allowed even on staff request.
-
-#### Layer 1 — Unavailability windows
-Availability is checked **negatively**: each user has unavailability windows (`from` / `to`, ISO 8601) representing leave or blocked time. A provider is bookable at a slot only if that slot falls **entirely outside** all of their unavailability windows.
-
-**Key unavailability fields:** `from`, `to`, `comments`, `user.name`, `user.id`, `id`
-
-**Access:** Admin users can view all users' unavailability. Non-admin users can only view their own.
-
-**API scope:** `ZohoCRM.settings.users_unavailability.READ`
-
-**How to check (API):**
-
-Use the User Unavailability tools to fetch unavailability windows:
-
-| Tool | Endpoint | When to use |
-|------|----------|-------------|
-| `crm_getUsersUnavailability` | `GET /crm/v8/settings/users_unavailability` | Fetch all users' unavailability windows (admin only) |
-| `crm_getUserUnavailabilityById` | `GET /crm/v8/settings/users_unavailability/{user_id}` | Fetch a specific provider's unavailability by their user ID |
-
-**Response fields per record:**
-- `from` — ISO 8601 start of unavailability window
-- `to` — ISO 8601 end of unavailability window
-- `comments` — reason the user marked themselves unavailable
-- `id` — unique unavailability record ID
-- `user.name`, `user.id` — the user this record belongs to
-
-**Optional query parameters:**
-- `filters` — JSON object to filter by time period. Supports comparators: `equals`, `between`, `greater_than`, `less_than`. Fields: `from`, `to`. Example: `{"comparator":"between","field":{"api_name":"from"},"value":"2026-07-10T00:00:00+05:30","value2":"2026-07-10T23:59:59+05:30"}`
-- `include_inner_details=user.zuid` — includes the user's ZUID in the response
-- `group_ids`, `role_ids`, `territory_ids` — comma-separated IDs to filter users by group, role, or territory
-
-**Checking a provider at a specific slot:**
-1. Call `crm_getUserUnavailabilityById` with the provider's user ID.
-2. For each returned record, check if the requested appointment time range `[requested_start, requested_end)` overlaps with any `[from, to)` window.
-3. If any overlap exists → the provider is NOT available at that slot.
-4. If HTTP 204 (no records) → the provider has no unavailability windows; proceed to Layer 2.
-
-**Important:** HTTP 204 (No Content) means no unavailability records exist — the provider has no blocked time. This is a valid success response, not an error.
-
-#### Layer 2 — Existing appointment overlap check
-Even if the provider has no unavailability window, they may already have a Scheduled appointment at the requested time. Before booking or rescheduling, fetch all `Scheduled` appointments owned by the provider and check for time overlap with the requested slot.
+Before confirming any slot, call the Zoho Calendar `getUsersFreeOrBusyDetails` tool for the provider over the requested time range. Skipping this check is not allowed even on staff request.
 
 **How to check:**
-1. Fetch the provider's Scheduled appointments: filter `Owner.id = <provider_id>` and `Status = Scheduled`, sorted by `Appointment_Start_Time`.
-2. For each existing appointment, calculate its end time as `Appointment_Start_Time + service duration`.
-3. Flag a conflict if the requested start time falls within any existing appointment's `[start, end)` window, OR if the new appointment's own end time overlaps another appointment's start time.
-4. If a conflict is detected, inform the staff user in a helpful way — e.g., *"Heads up — Alex already has a Home Cleaning from 2:00 PM to 3:30 PM on Thursday. Want to try 4:00 PM instead, or go with another provider?"*
+1. Call `getUsersFreeOrBusyDetails` with the provider's user ID and the requested slot's start and end time.
+2. A slot is free only if it falls **entirely outside** all busy periods returned.
+3. If any busy period overlaps the requested slot → the provider is NOT available.
+4. If a conflict is detected, inform the staff user helpfully — e.g., *"Heads up — Alex is busy from 2:00 PM to 3:30 PM on Thursday. Want to try 4:00 PM instead, or go with another provider?"*
 
-**This check applies to both new bookings and reschedules.** A provider should not have two overlapping Scheduled appointments.
+**This check applies to both new bookings and reschedules.**
 
 ### Selection logic
 1. If the staff user names a specific member:
-   - Confirm the member is listed in the service's members field.
-   - Run both Layer 1 (unavailability) and Layer 2 (overlap) checks.
-   - If blocked: *"[Name] isn't free at that time — they've got [reason/existing appointment]. Want to try [next available slot] or assign someone else?"*
+   - Confirm the member is listed in the service's `Members` field.
+   - Call `getUsersFreeOrBusyDetails` to verify availability at the requested slot.
+   - If blocked: *"[Name] isn't free at that time. Want to try [next available slot] or assign someone else?"*
 2. If the staff user says "any provider" or "anyone":
-   - Pick a member of the service who passes both availability checks.
+   - Pick a member of the service who is free at the requested slot per `getUsersFreeOrBusyDetails`.
 3. If no eligible member is free at the requested time:
    - Offer alternative times when at least one member is available, and name the available member — e.g., *"Nobody's free at 2 PM, but Sam is available at 3 PM and 4 PM. Would either of those work?"*
 
@@ -232,7 +189,7 @@ Key fields when reading an appointment:
 5. **Confirm date and time.** Offer specific slots. Resolve relative dates to concrete dates. Times are in the **org's timezone** unless the staff user states otherwise.
 6. **Check service availability.** Verify the date falls within the service's availability window if org preferences require it.
 7. **Confirm location.** Ask whether the service is at the business location or the customer's address. Match the service's configured `Location` type — never offer a location type the service does not support.
-8. **Confirm the provider.** Verify the member is in the service's members list, has no unavailability window covering the slot, and has no existing Scheduled appointment overlapping the requested time (Section 5 — both Layer 1 and Layer 2 checks).
+8. **Confirm the provider.** Verify the member is in the service's `Members` field, then call `getUsersFreeOrBusyDetails` (Zoho Calendar) to confirm they are free at the requested slot.
 9. **Confirm the address** if `Location = "Client Address"`. Capture street, city, and any access instructions.
 10. **Confirm reminder preference** (optional: unit + period).
 11. **Present a friendly summary before saving.** Read back all details in a natural, conversational way and ask for a go-ahead — for example: *"All set! Here's what I've got — AC Repair for James on Thursday 10 July at 2:00 PM, assigned to Alex, at their address (14 Maple Street). Shall I go ahead and book that?"* Never create the appointment without the staff user's confirmation.
@@ -291,7 +248,7 @@ Staff can directly reschedule appointments. Reschedule reason and notes are **ma
 Before sending any reschedule API call, the agent must:
 
 1. **Collect the reason.** Ask the staff user why the appointment is being rescheduled if they haven't already stated it — e.g., *"Quick one — what's the reason for the reschedule? (e.g., customer request, provider unavailable, etc.)"* Reason and notes are mandatory; never proceed without them.
-2. **Run the two-layer availability check** on the provider at the new time (Section 5). If there's a conflict, resolve it before proceeding.
+2. **Call `getUsersFreeOrBusyDetails` (Zoho Calendar)** for the provider at the new time. If there's a conflict, resolve it before proceeding.
 3. **Present a double-check summary and ask for explicit confirmation:**
 
    *"Just to confirm — you'd like to move [Appointment Name] from [old time] to [new time], assigned to [Provider], reason: [reason]. Shall I go ahead with the reschedule?"*
@@ -324,7 +281,7 @@ Body: [{ "id": "<appointment_id>", "Appointment_Start_Time": "<new_iso_time>", "
 Up to 100 records per call. `id` is mandatory in the body (or URL for single-record updates).
 
 ### Provider availability on reschedule
-Before updating, verify the current (or newly requested) provider is free at the new time (both Layer 1 unavailability and Layer 2 existing appointment overlap). If unavailable:
+Before updating, call `getUsersFreeOrBusyDetails` (Zoho Calendar) to verify the current (or newly requested) provider is free at the new time. If unavailable:
 - Offer alternative times when they are free, OR
 - Offer the next available eligible member at the new time.
 
@@ -464,7 +421,7 @@ The clone is a brand-new appointment; it does not inherit the original's status 
 | Associate tag to record | `POST /crm/v8/{module}/{record_id}/actions/add_tags` |
 
 ### List Services — approved fields
-Request only: `id, Service_Name, Location, Job_Sheet_Required` plus the confirmed service-members field.
+Request only: `id, Service_Name, Location, Job_Sheet_Required, Members`.
 Requesting all fields or unknown field names returns 400.
 
 ### List / filter Appointments
@@ -521,7 +478,7 @@ Useful filters:
 | Cannot complete — job sheet missing | `show_job_sheet` preference is on and service requires it | Job sheet must be submitted first; inform staff user |
 | `Completed` / `Overdue` status too early | Trying to complete before end time | Status change only allowed after appointment end time |
 | Reschedule limit reached | Appointment already rescheduled 10 times | Create a new appointment; note the limit in the run summary |
-| Member field name wrong (400 on List Services) | Field name guessed instead of verified | Verify field name via `GET /crm/v8/settings/fields?module=Services__s` |
+| Member field name wrong (400 on List Services) | Wrong field name used | Use `Members` as the field name |
 | No match / multiple matches on contact search | Ambiguous customer record | Ask one clarifying question; never proceed with an unconfirmed match |
 | Email Opt Out on customer record | Customer has opted out of emails | Skip notification silently; inform staff user; appointment action stands |
 | No email on customer record | Customer has no email address stored | Skip notification; inform staff user |
@@ -558,13 +515,13 @@ Do not create an appointment until all items pass:
 |----------|--------|
 | New customer, first booking | Search all Appointment For modules → create record if not found → full checklist → book |
 | Returning customer | Look up record → suggest last service → confirm service → suggest last member → get timing → verify availability → book |
-| "Any provider" | Pick a service member with no unavailability window at the requested time |
+| "Any provider" | Pick a service member who is free per `getUsersFreeOrBusyDetails` at the requested time |
 | Preferred member not a service member | Inform staff user; offer eligible members for that service |
 | Preferred member unavailable | Offer next slot when member is free, or next available eligible member at original time |
 | Clone / repeat booking | Pre-fill from last completed appointment → new date/time → full checklist → book as new |
 | View upcoming appointments | Filter by Status=Scheduled, sort by Appointment_Start_Time asc |
 | View appointment history | Filter by Status=Completed or Cancelled, sort by Appointment_Start_Time desc |
-| Reschedule | Identify appointment → get new time → Layer 1+2 availability checks → collect reason → double-check summary → staff confirms → minimal PUT payload |
+| Reschedule | Identify appointment → get new time → `getUsersFreeOrBusyDetails` availability check → collect reason → double-check summary → staff confirms → minimal PUT payload |
 | Cancellation | Identify → offer reschedule once → collect reason → double-check summary with irreversibility warning → staff confirms → set Status=Cancelled |
 | Service not found in live CRM response | Inform staff user; offer closest active alternative; do not book from memory |
 | Duplicate detected | Show existing appointment; do not create a new one |

@@ -18,7 +18,7 @@ API scope to read: `ZohoCRM.modules.services.READ`
 | Record ID | `id` | Required when creating an appointment (`Service_Name.id`) |
 | Location | `Location` | `"Business Address"` or `"Client Address"` — must match the appointment location |
 | Job Sheet Required | `Job_Sheet_Required` | `"Yes"` or `"No"` — if Yes, a job sheet is mandatory before completion |
-| Members | (related list) | Only users in this list can be assigned as the appointment Owner |
+| Members | `Members` | Only users in this list can be assigned as the appointment Owner |
 
 ---
 

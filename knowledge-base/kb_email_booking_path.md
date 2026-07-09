@@ -187,10 +187,10 @@ Apply the checklist to the **EXTRACTED details**, not the raw email. Anything no
 
 1. Unmistakable intent to book.
 2. Exactly one contact resolved; sender address matches that contact.
-3. Service named and recognized (exists in `Services__s` module). When calling List Services, request ONLY: `id, Service_Name, Location, Job_Sheet_Required` — requesting all fields returns a 400 error. **Exact or unambiguous match → proceed. Fuzzy match** (loose wording → nearest service) → send one ask email to confirm the service before booking. A fuzzy match does NOT count as recognized.
+3. Service named and recognized (exists in `Services__s` module). When calling List Services, request ONLY: `id, Service_Name, Location, Job_Sheet_Required, Members` — requesting all fields returns a 400 error. **Exact or unambiguous match → proceed. Fuzzy match** (loose wording → nearest service) → send one ask email to confirm the service before booking. A fuzzy match does NOT count as recognized.
 4. Specific date AND time given. Resolve relative dates using today's date.
 5. The time is in the future.
-6. Provider determined AND available at the requested time. Resolve the provider (a named member of the service, or "any" → an eligible member), then **check that member's availability** at the requested slot — the slot must fall entirely outside the member's unavailability windows AND not overlap any existing Scheduled appointment they own.
+6. Provider determined AND available at the requested time. Resolve the provider (a named member of the service, or "any" → an eligible member), then **call `getUsersFreeOrBusyDetails` (Zoho Calendar)** to check availability at the requested slot — the slot is free only if it falls entirely outside all busy periods returned.
    - **Named provider unavailable** → send ONE ask email asking the customer for a different date/time (counts toward the 2-ask cap). Do not silently swap a specifically requested member.
    - **"Any" provider, requested member/first pick unavailable** → try another eligible member who is free at that time. If no eligible member is free → send ONE ask email asking the customer for a different date/time.
 7. Address provided for client-address services.
@@ -430,8 +430,8 @@ Confirm the From address before going live. The tag name `"ZIA-agent(AppointPal)
 |------|------------|
 | Search Customer | Find contact by ID, email, or name |
 | Get Service History | Read customer's past appointments; check if appointment already exists (idempotency) |
-| List Services | Get service id, location, and member list — request only: `id, Service_Name, Location, Job_Sheet_Required` |
-| Check Availability | Check provider unavailability windows |
+| List Services | Get service id, location, and member list — request only: `id, Service_Name, Location, Job_Sheet_Required, Members` |
+| Check Availability | Call `getUsersFreeOrBusyDetails` (Zoho Calendar) to check provider availability |
 | Get Emails of a Record | List a contact's email thread (to find CRM internal message_ids of earlier emails) |
 | `crm_getSpecificCrmEmailContent` | Fetch a single email's body — always pass hex message_id from list response; always pass contact Owner ID as user_id |
 | Send Mail | Send ask email, confirmation, or handoff note |

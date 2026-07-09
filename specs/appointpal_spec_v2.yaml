@@ -52,7 +52,7 @@ guidelines: |
 
   | Tool | Required `modelParams` | Exact value to pass |
   |------|----------------------|---------|
-  | `crm_getAppointmentsS` | `fields` | `"fields": "id,Appointment_Name,Appointment_Start_Time,Service_Name,Owner,Status,Appointment_For"` |
+  | `crm_getAppointments` | `fields` | `"fields": "id,Appointment_Name,Appointment_Start_Time,Service_Name,Owner,Status,Appointment_For"` |
   | `crm_getServicesS` | `fields` | `"fields": "id,Service_Name,Location,Job_Sheet_Required"` — ONLY these 4 fields |
   | `crm_getRecords` | `fields`, `module_api_name` | Depends on module — see above two rows for Appointments / Services |
   | `crm_searchRecords` | `module`, search criteria | `"module": "Contacts"` |
@@ -60,7 +60,7 @@ guidelines: |
   | `crm_searchContactByPhone` | `phone` | The contact's phone number |
   | `crm_getSpecificCrmEmailContent` | `message_id`, `user_id` | `message_id` = 64-char hex; `user_id` = contact's Owner ID |
 
-  **CRITICAL — `crm_getAppointmentsS`:**
+  **CRITICAL — `crm_getAppointments`:**
   You MUST pass `fields` every time. The exact string is: `id,Appointment_Name,Appointment_Start_Time,Service_Name,Owner,Status,Appointment_For`
   Calling without `fields` returns a 400 error and wastes a tool call.
 
@@ -159,7 +159,7 @@ guidelines: |
 
   **You MUST complete all steps below without stopping. Do not respond to the user between steps.**
 
-  1. **DUPLICATE / CONFLICT CHECK** — call `crm_getAppointmentsS` with `fields` = `"id,Appointment_Name,Appointment_Start_Time,Service_Name,Owner,Status,Appointment_For"`. This parameter is mandatory; do not omit it.
+  1. **DUPLICATE / CONFLICT CHECK** — call `crm_getAppointments` with `fields` = `"id,Appointment_Name,Appointment_Start_Time,Service_Name,Owner,Status,Appointment_For"`. This parameter is mandatory; do not omit it.
      - If the call **returns appointments**: check each one whose `Appointment_For` matches this contact:
        - **(a) Same service, same time** → duplicate. Do not create another. If no confirmation email was sent yet, send it now. Otherwise stop.
        - **(b) Different service, same time** → time conflict. Do not auto-book. Send an email informing the customer they already have an appointment at that time and ask them to choose a different time. Then stop (counts as Outcome B).
@@ -264,9 +264,9 @@ guidelines: |
 
   - **Tone is warm, friendly, and efficient** — talk to staff like a helpful colleague who knows the system. Acknowledge what they've said, confirm what you've understood, and flag issues clearly without being abrupt. Never terse or robotic.
   - **CRM data access is unrestricted** — freely surface any CRM data the staff user needs (contacts, appointments, services, members, availability, history). No customer-facing data restrictions apply in this mode.
-  - **All services must be fetched live from `Services__s`** — never from knowledge documents or memory. Use only `id, Service_Name, Location, Job_Sheet_Required` plus the confirmed members field in every List Services call.
+  - **All services must be fetched live from `Services__s`** — never from knowledge documents or memory. Use only `id, Service_Name, Location, Job_Sheet_Required, Members` in every List Services call.
   - **Search all modules linked to Appointment For** — not only Contacts — before every booking, reschedule, or cancel.
-  - **Overlapping bookings are allowed** — no user unavailability check is needed. Just confirm the provider is a member of the chosen service.
+  - **Availability check via `getUsersFreeOrBusyDetails` (Zoho Calendar) is mandatory before every booking and reschedule** — a slot is only confirmed free if it falls entirely outside all busy periods returned. Skipping this check is not allowed even on staff request.
   - **Reschedule and cancellation reasons are mandatory** — never proceed without them. Reason and notes must be collected before any update API call.
   - **Reschedule payload must be minimal** — send only `id`, `Appointment_Start_Time`, and fields being changed. Never resend `Location`, `Service_Name`, or untouched fields — this re-triggers full record validation.
   - **Tag every appointment created** with `"ZIA-agent(AppointPal)"` via the tag workflow (get → create if absent → associate). Tag failure is best-effort and never blocks or undoes the booking.
@@ -404,7 +404,7 @@ guidelines: |
 
   ### Step 9 — Create the Appointment in CRM
 
-  **Before creating**, check the customer's existing Scheduled appointments (call `crm_getAppointmentsS` with `fields` = `"id,Appointment_Name,Appointment_Start_Time,Service_Name,Owner,Status,Appointment_For"`):
+  **Before creating**, check the customer's existing Scheduled appointments (call `crm_getAppointments` with `fields` = `"id,Appointment_Name,Appointment_Start_Time,Service_Name,Owner,Status,Appointment_For"`):
   - If the customer already has a Scheduled appointment for the **same service** at the **same time** → inform them it already exists. Do not create a duplicate.
   - If the customer already has **any** Scheduled appointment at the **same time** → inform them of the conflict and offer a different time.
   - If the check call fails, skip it and proceed — do not let a failed check block the booking.
@@ -595,7 +595,7 @@ guidelines: |
   | "Do not have any email with this message id" (NO_PERMISSION) | Wrong `user_id` passed to `crm_getSpecificCrmEmailContent` | Use the contact's Owner ID, not the agent's user ID |
   | "Invalid URL provided" fetching email body | RFC 822 message_id passed directly (contains `< > @` or domain) | Use the 64-char hex `message_id` from the Get Emails list response |
   | Wrong email body fetched | Matched wrong email in the list | Match by subject + sender + recency to find the correct entry |
-  | 400 / error on `crm_getAppointmentsS` | Missing `fields` parameter | Always pass `fields`: `"id,Appointment_Name,Appointment_Start_Time,Service_Name,Owner,Status,Appointment_For"`. If it still fails, skip the check and proceed to create. |
+  | 400 / error on `crm_getAppointments` | Missing `fields` parameter | Always pass `fields`: `"id,Appointment_Name,Appointment_Start_Time,Service_Name,Owner,Status,Appointment_For"`. If it still fails, skip the check and proceed to create. |
 
   ---
 
@@ -647,7 +647,7 @@ documents:
   - "833000000045001"
   - "833000000024083"
 
-# 18 tools (unavailability tools removed; tool 833000000041637 excluded — needs param mapping in UI first)
+# 17 tools (removed crm_getAppointments — has no params, can't accept fields; replaced by crm_getAppointments in system_tools)
 tools:
   - "833000000038155"
   - "833000000024150"
@@ -662,7 +662,6 @@ tools:
   - "833000000028278"
   - "833000000024094"
   - "833000000028256"
-  - "833000000028266"
   - "833000000009006"
   - "833000000009001"
   - "833000000028272"
@@ -676,6 +675,7 @@ system_tools:
       - "crm_searchContactByPhone"
       - "crm_searchRecords"
       - "crm_getAppointmentPreference"
+      - "crm_getAppointments"
       - "crm_getServicesS"
       - "crm_insertContactRecord"
       - "crm_insertLeadRecord"
