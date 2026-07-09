@@ -16,7 +16,7 @@ Appointment-driven service businesses — home services, automobile workshops, s
 
 - **Email (autonomous):** reads an inbound customer email and, with no human confirming each step, either books the appointment and replies to confirm, asks once for anything genuinely missing, reschedules an existing appointment, or escalates to a Task — always exactly one outcome per email.
 - **Website chatbot (conversational):** a warm, customer-facing assistant that never exposes any internal system, collects name and email up front, and confirms before every write. New visitors are captured as a Lead with their preferences, not a direct booking.
-- **CRM internal (staff assistant):** a colleague-style assistant for sales reps and coordinators, where a human confirms each write; adds two-layer availability checks, cloning of past appointments, and job-sheet handling.
+- **CRM internal (staff assistant):** a colleague-style assistant for sales reps and coordinators, where a human confirms each write; adds two-layer availability checks, enabling fast-paced appointment bookings for staffs.
 
 The core promise across all three: the CRM is the single source of truth, services are always fetched live, providers must be eligible and available, times must be in the future, and no genuine request is ever silently dropped.
 
