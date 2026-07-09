@@ -150,7 +150,28 @@ Availability is determined by checking when a provider is **not** available. Eac
 
 **Booking rule:** A provider can be booked for a slot only if that slot falls entirely outside all of their unavailability windows. When the user says "any provider," the agent picks a service member with no unavailability covering the requested time.
 
-**API scope to read unavailability:** `ZohoCRM.settings.users_unavailability.READ`
+### User Unavailability API
+
+| Tool | Endpoint | Purpose |
+|------|----------|---------|
+| `crm_getUsersUnavailability` | `GET /crm/v8/settings/users_unavailability` | Fetch all users' unavailability (admin only) |
+| `crm_getUserUnavailabilityById` | `GET /crm/v8/settings/users_unavailability/{user_id}` | Fetch a specific user's unavailability |
+
+**API scope:** `ZohoCRM.settings.users_unavailability.READ`
+
+**Response:** Array of `users_unavailability` records, each with `from` (ISO 8601), `to` (ISO 8601), `comments`, `id`, and `user` (`name`, `id`, optional `zuid`). Paginated via `info` object (`per_page`, `page`, `count`, `more_records`).
+
+**Optional parameters:**
+- `filters` — JSON to filter by time. Comparators: `equals`, `between`, `greater_than`, `less_than`. Fields: `from`, `to`.
+- `include_inner_details=user.zuid` — include ZUID in response
+- `group_ids`, `role_ids`, `territory_ids` — comma-separated IDs to filter by group, role, or territory
+
+**HTTP 204** means no unavailability records exist — the provider has no blocked time. This is valid, not an error.
+
+**Availability check procedure:**
+1. Call `crm_getUserUnavailabilityById` with the provider's user ID.
+2. If HTTP 204 → no blocked time; provider passes Layer 1.
+3. If HTTP 200 → compare each `[from, to)` window against the requested `[start, end)` slot. Any overlap → provider is NOT available.
 
 ---
 

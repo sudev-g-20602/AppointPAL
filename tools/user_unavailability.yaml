@@ -1,0 +1,188 @@
+openapi: 3.0.3
+info:
+  title: Zoho CRM User Unavailability API
+  version: v8
+  description: Get the details of users' unavailability windows. Admin users can get details of all users; non-admin users can get only their own records.
+
+servers:
+  - url: https://www.zohoapis.in/crm/v8
+
+paths:
+  /settings/users_unavailability:
+    get:
+      operationId: crm_getUsersUnavailability
+      summary: Get Users' Unavailability
+      description: >
+        Retrieves all users' unavailability windows. Each record contains a from/to
+        ISO 8601 time range, the user's name and ID, and an optional comment.
+        Admin users can see all users; non-admin users see only their own.
+        Use this to check whether a service member is available at a requested
+        appointment time — a provider is bookable only if the slot falls entirely
+        outside all of their unavailability windows.
+      parameters:
+        - name: group_ids
+          in: query
+          required: false
+          schema:
+            type: string
+          description: >
+            Comma-separated group IDs to filter users by group.
+        - name: role_ids
+          in: query
+          required: false
+          schema:
+            type: string
+          description: >
+            Comma-separated role IDs to filter users by role.
+        - name: territory_ids
+          in: query
+          required: false
+          schema:
+            type: string
+          description: >
+            Comma-separated territory IDs to filter users by territory.
+        - name: include_inner_details
+          in: query
+          required: false
+          schema:
+            type: string
+          description: >
+            Pass "user.zuid" to include the user's ZUID in the response.
+        - name: filters
+          in: query
+          required: false
+          schema:
+            type: string
+          description: >
+            JSON object to filter by time period. Supports comparators:
+            equals, not_equals, between, greater_than, greater_equal, less_than, less_equal.
+            Fields: from, to. Example: {"comparator":"between","field":{"api_name":"from"},"value":"2026-07-01T00:00:00+05:30","value2":"2026-07-31T23:59:59+05:30"}
+      responses:
+        "200":
+          description: Unavailability records returned successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  users_unavailability:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        comments:
+                          type: string
+                          description: Comment the user added when marking unavailable
+                        from:
+                          type: string
+                          description: ISO 8601 start of unavailability window
+                        to:
+                          type: string
+                          description: ISO 8601 end of unavailability window
+                        id:
+                          type: string
+                          description: Unique ID of the unavailability record
+                        user:
+                          type: object
+                          properties:
+                            name:
+                              type: string
+                            id:
+                              type: string
+                            zuid:
+                              type: string
+                  info:
+                    type: object
+                    properties:
+                      per_page:
+                        type: integer
+                      count:
+                        type: integer
+                      page:
+                        type: integer
+                      more_records:
+                        type: boolean
+        "204":
+          description: No unavailability records found
+        "400":
+          description: Invalid request method
+      security:
+        - OAuth2:
+            - ZohoCRM.settings.users_unavailability.READ
+
+  /settings/users_unavailability/{user_id}:
+    get:
+      operationId: crm_getUserUnavailabilityById
+      summary: Get Specific User's Unavailability
+      description: >
+        Retrieves unavailability windows for a specific user by their user ID.
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The CRM user ID to fetch unavailability for
+        - name: include_inner_details
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Pass "user.zuid" to include the user's ZUID in the response.
+      responses:
+        "200":
+          description: Unavailability records returned successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  users_unavailability:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        comments:
+                          type: string
+                        from:
+                          type: string
+                        to:
+                          type: string
+                        id:
+                          type: string
+                        user:
+                          type: object
+                          properties:
+                            name:
+                              type: string
+                            id:
+                              type: string
+                            zuid:
+                              type: string
+                  info:
+                    type: object
+                    properties:
+                      per_page:
+                        type: integer
+                      count:
+                        type: integer
+                      page:
+                        type: integer
+                      more_records:
+                        type: boolean
+        "204":
+          description: No unavailability records found
+      security:
+        - OAuth2:
+            - ZohoCRM.settings.users_unavailability.READ
+
+components:
+  securitySchemes:
+    OAuth2:
+      type: oauth2
+      flows:
+        authorizationCode:
+          authorizationUrl: https://accounts.zoho.in/oauth/v2/auth
+          tokenUrl: https://accounts.zoho.in/oauth/v2/token
+          scopes:
+            ZohoCRM.settings.users_unavailability.READ: Read user unavailability windows

@@ -122,6 +122,35 @@ Availability is checked **negatively**: each user has unavailability windows (`f
 
 **API scope:** `ZohoCRM.settings.users_unavailability.READ`
 
+**How to check (API):**
+
+Use the User Unavailability tools to fetch unavailability windows:
+
+| Tool | Endpoint | When to use |
+|------|----------|-------------|
+| `crm_getUsersUnavailability` | `GET /crm/v8/settings/users_unavailability` | Fetch all users' unavailability windows (admin only) |
+| `crm_getUserUnavailabilityById` | `GET /crm/v8/settings/users_unavailability/{user_id}` | Fetch a specific provider's unavailability by their user ID |
+
+**Response fields per record:**
+- `from` — ISO 8601 start of unavailability window
+- `to` — ISO 8601 end of unavailability window
+- `comments` — reason the user marked themselves unavailable
+- `id` — unique unavailability record ID
+- `user.name`, `user.id` — the user this record belongs to
+
+**Optional query parameters:**
+- `filters` — JSON object to filter by time period. Supports comparators: `equals`, `between`, `greater_than`, `less_than`. Fields: `from`, `to`. Example: `{"comparator":"between","field":{"api_name":"from"},"value":"2026-07-10T00:00:00+05:30","value2":"2026-07-10T23:59:59+05:30"}`
+- `include_inner_details=user.zuid` — includes the user's ZUID in the response
+- `group_ids`, `role_ids`, `territory_ids` — comma-separated IDs to filter users by group, role, or territory
+
+**Checking a provider at a specific slot:**
+1. Call `crm_getUserUnavailabilityById` with the provider's user ID.
+2. For each returned record, check if the requested appointment time range `[requested_start, requested_end)` overlaps with any `[from, to)` window.
+3. If any overlap exists → the provider is NOT available at that slot.
+4. If HTTP 204 (no records) → the provider has no unavailability windows; proceed to Layer 2.
+
+**Important:** HTTP 204 (No Content) means no unavailability records exist — the provider has no blocked time. This is a valid success response, not an error.
+
 #### Layer 2 — Existing appointment overlap check
 Even if the provider has no unavailability window, they may already have a Scheduled appointment at the requested time. Before booking or rescheduling, fetch all `Scheduled` appointments owned by the provider and check for time overlap with the requested slot.
 
@@ -419,9 +448,16 @@ The clone is a brand-new appointment; it does not inherit the original's status 
 | Get single service | `GET /crm/v8/Services__s/{id}` |
 | Get service field metadata | `GET /crm/v8/settings/fields?module=Services__s` |
 | Get appointment field metadata | `GET /crm/v8/settings/fields?module=Appointments__s` |
-| Get user unavailability | `GET /crm/v8/settings/users_unavailability` |
-| Get appointment preferences | `GET /crm/v8/settings/appointments` |
+| Get all users' unavailability | `GET /crm/v8/settings/users_unavailability` |
+| Get specific user's unavailability | `GET /crm/v8/settings/users_unavailability/{user_id}` |
+| Get appointment preferences | `GET /crm/v8/settings/appointment_preferences` |
 | Search records (all modules) | `GET /crm/v8/{module}/search?criteria=...` |
+| Search contacts by email | `GET /crm/v8/Contacts/search?email=...` |
+| Search contacts by phone | `GET /crm/v8/Contacts/search?phone=...` |
+| Create contact | `POST /crm/v8/Contacts` |
+| Create lead | `POST /crm/v8/Leads` |
+| Add note to lead | `POST /crm/v8/Leads/{record_id}/Notes` |
+| List services | `GET /crm/v8/Services__s` |
 | Send email to customer | `POST /crm/v8/Contacts/{record_id}/actions/send_mail` |
 | Get tags (by module) | `GET /crm/v8/settings/tags?module={module}` |
 | Create tag | `POST /crm/v8/settings/tags?module={module}` |
