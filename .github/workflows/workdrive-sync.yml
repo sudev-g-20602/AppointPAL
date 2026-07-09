@@ -1,0 +1,53 @@
+name: Sync Markdown to Zoho WorkDrive
+
+# Runs after code lands on main (after a merged PR, or a direct push).
+# Triggering only on main means WorkDrive mirrors your reviewed, conflict-free
+# source of truth.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "**.md"      # added, modified, OR deleted .md all trigger this
+
+# If two merges land close together, run them one at a time so uploads/deletes
+# don't race; the later state wins.
+concurrency:
+  group: workdrive-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0        # full history so we can diff before/after
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Sync changed Markdown files to WorkDrive
+        env:
+          # --- Secrets: Settings > Secrets and variables > Actions ---
+          ZOHO_CLIENT_ID:           ${{ secrets.ZOHO_CLIENT_ID }}
+          ZOHO_CLIENT_SECRET:       ${{ secrets.ZOHO_CLIENT_SECRET }}
+          ZOHO_REFRESH_TOKEN:       ${{ secrets.ZOHO_REFRESH_TOKEN }}
+          WORKDRIVE_ROOT_FOLDER_ID: ${{ secrets.WORKDRIVE_ROOT_FOLDER_ID }}
+
+          # --- Data center. India org -> .in domains (change if you're on .com/.eu) ---
+          ZOHO_ACCOUNTS_DOMAIN: https://accounts.zoho.in
+          ZOHO_API_DOMAIN:      https://www.zohoapis.in
+
+          # --- Mirror deletions: removing a .md in Git moves it to WorkDrive Trash ---
+          MIRROR_DELETES: "true"
+
+          # --- Commit range for this push (provided automatically by GitHub) ---
+          BEFORE_SHA: ${{ github.event.before }}
+          AFTER_SHA:  ${{ github.event.after }}
+        run: python sync_to_workdrive.py
