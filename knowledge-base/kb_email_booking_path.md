@@ -57,30 +57,37 @@ Related notes:
 
 ## CRITICAL — VIEW EMAIL PARAMETER RULES (`crm_getSpecificCrmEmailContent`)
 
-### user_id
-MUST be the Owner ID of the contact record — the user whose IMAP mailbox received the email. Do NOT use the agent's own user ID or any other system user ID. Retrieve the Owner ID from the contact record before calling this tool.
+This tool requires two parameters that MUST come from the `getemailsofarecord` list response — never from the trigger payload, never fabricated, never guessed.
 
-### message_id
-The trigger payload contains the email's RFC 822 internet Message-ID (format: `<CAH=...@mail.gmail.com>`). This is NOT the CRM internal message_id required by this tool. Passing it directly returns "Invalid URL provided".
+### MANDATORY FIRST STEP — call `getemailsofarecord`
 
-The correct message_id is a **64-character lowercase hex string** with no brackets, no @ symbol, and no domain.
+Before EVERY call to `crm_getSpecificCrmEmailContent`, you MUST first call `getemailsofarecord` (Get Emails of a Record) with the contact's `record_id` and `module_api_name`. There are NO exceptions — even for reschedule or cancellation emails. Skipping this step and passing a fabricated or trigger-sourced value is the single most common failure of this path.
 
-| | Example |
-|---|---|
-| **Valid** | `a416b1e82df497f6a11c4394cc10b510d8387788dd904734db1c82ed4775ab36` |
-| **Invalid** | `<CAH=OqbJG27tNo4zCwOons56p9VJFNP0_ZEgrpPGuMiPRnDUZqQ@mail.gmail.com>` |
+The list response contains both values you need:
+- **`message_id`**: 64-character lowercase hex string (per email entry)
+- **`user_id`**: found in the `owner.id` field of each email entry
 
-**Before every call to `crm_getSpecificCrmEmailContent`, verify the message_id:**
-- If it contains `< > @` or a domain — STOP. It is the RFC 822 ID.
-- Resolve the correct hex message_id from the Get Emails of a Record list response first.
+### message_id — format validation (check BEFORE every call)
 
-**To get the correct message_id:**
-1. Call Get Emails of a Record for the contact.
-2. Find the matching email in the list (by subject, sender, and recency).
-3. Use the `message_id` field from that list entry (the CRM internal hex hash).
+| Format | Example | Usable? |
+|--------|---------|---------|
+| **64-char hex** (from `getemailsofarecord` list) | `a416b1e82df497f6a11c4394cc10b510d8387788dd904734db1c82ed4775ab36` | **YES — use this** |
+| **RFC 822 Message-ID** (from trigger payload) | `<CAH=OqbJG27tNo4zCwOons56p9VJFNP0_ZEgrpPGuMiPRnDUZqQ@mail.gmail.com>` | **NO — STOP** |
+| **All zeros or placeholder** | `0000000000000000000000000000000000000000000000000000000000000000` | **NO — STOP** |
 
-**Error diagnosis:**
-- "Do not have any email with this message id in user configured email account" (NO_PERMISSION) → wrong user_id. Fix: use the contact's Owner ID.
+**STOP rule:** If the `message_id` you are about to pass contains `<`, `>`, `@`, a domain name, OR is all zeros — **STOP**. You do not have the correct value. Call `getemailsofarecord` first, find the matching email in the list by subject + sender + recency, and use the `message_id` from that list entry.
+
+### user_id — where to get it
+
+The `user_id` is the CRM user whose IMAP mailbox received the email. Get it from the `owner.id` field in the `getemailsofarecord` list response. Do NOT use the agent's own user ID, do NOT fabricate a value like `"11"`, and do NOT use a value from the trigger payload's `serviceinfo`.
+
+### Error diagnosis
+
+| Error message | Cause | Fix |
+|---------------|-------|-----|
+| "Do not have any email with this message id in user configured email account" (NO_PERMISSION) | Wrong `user_id` | Use `owner.id` from the `getemailsofarecord` list response |
+| "Invalid URL provided" | Wrong `message_id` format (contains `< > @` or domain) | Use the 64-char hex `message_id` from the `getemailsofarecord` list response |
+| "Invalid message id has been provided" (INVALID_DATA) | Fabricated or all-zeros `message_id` | Call `getemailsofarecord` first — never fabricate a message_id |
 
 ---
 
@@ -88,9 +95,7 @@ The correct message_id is a **64-character lowercase hex string** with no bracke
 
 Each inbound email triggers a fresh agent run; the agent has no memory of previous runs.
 
-**Solution:** The contact's email thread IS the state. On every run, the agent reads the contact's recent emails. If it finds its own unanswered missing-details question (and no appointment created since), the current email is a reply in a pending conversation; the original request + the ask + the reply together contain everything needed.
-
-**Practical rule:** The trigger payload's message_id is the RFC 822 internet Message-ID header (format: `<...@domain.com>`). This cannot be used directly with the View Email API. The correct message_id is a 64-character lowercase hex string that comes from the Get Emails of a Record list response. Before every call to `crm_getSpecificCrmEmailContent`, verify the message_id is in hex format — if it contains `< > @` or a domain, resolve it through the list first. The user_id to pass is the contact's Owner ID, not the agent's user ID.
+**Solution:** The contact's email thread IS the state. On every run, the agent calls `getemailsofarecord` to list the contact's recent emails. If it finds its own unanswered missing-details question (and no appointment created since), the current email is a reply in a pending conversation; the original request + the ask + the reply together contain everything needed.
 
 ---
 
@@ -98,16 +103,19 @@ Each inbound email triggers a fresh agent run; the agent has no memory of previo
 
 When triggered by an incoming email, the trigger payload contains:
 - `record_id`: the contact's CRM record ID
-- `message_id`: the email's RFC 822 internet Message-ID (format: `<...@domain.com>`)
+- `mailmeta.subject`, `mailmeta.from`: the email subject and sender
 
-**To read the triggering email's body:**
-1. Call Get Emails of a Record using the trigger's `record_id` and `module_api_name`.
-2. In the list response, find the email that matches the triggering one. Identify it by:
-   - Subject matching the email subject from the trigger context, AND
-   - Sender being the contact's email address (inbound), AND
-   - It being the most recent inbound email from the contact in the list.
-3. Use the `message_id` field from that list entry (the CRM internal hex hash) when calling `crm_getSpecificCrmEmailContent`.
-4. For `user_id`, use the Owner ID of the contact record — NOT the agent's own user ID.
+**This is ALWAYS the first thing the agent does — no exceptions, even for reschedule or cancellation emails.**
+
+1. **Call `getemailsofarecord`** with the trigger's `record_id` and `module_api_name` (`Contacts`). This is always the very first tool call on every email trigger. Never skip this step.
+
+2. **Take the latest email** from the list response — the most recent inbound email (first `"sent": false` entry matching the trigger's subject and sender). This entry contains the `message_id` (64-char hex) and `user_id` (in the `owner.id` field).
+
+3. **Check for a thread:**
+   - **If the email is part of a thread** (same subject as earlier emails in the list, or the list shows prior back-and-forth): read the thread conversation by calling `crm_getSpecificCrmEmailContent` for each relevant email in the thread, using their `message_id` and `user_id` from the list response.
+   - **If it is a standalone email** (no thread): call `crm_getSpecificCrmEmailContent` once, using the `message_id` and `user_id` from the latest email entry.
+
+4. **Extract details** from the email body before proceeding to classification or the checklist.
 
 ---
 
@@ -269,8 +277,7 @@ Never send a missing-details email AND book in the same run. Never produce more 
 1. **RECONSTRUCT THE THREAD**
    - Call Get Emails of a Record to list the contact's emails.
    - For each email you need to read (original request, your prior ask, the current reply), find it in the list by subject + sender + position, then use the `message_id` from that list entry (CRM internal hex format) to call `crm_getSpecificCrmEmailContent`.
-   - The trigger's RFC 822 message_id (`<...@domain.com>`) cannot be used directly — always resolve it through the list first.
-   - `user_id` for every fetch = the contact's Owner ID.
+   - Always get `message_id` and `user_id` from the `getemailsofarecord` list response — never from the trigger payload.
 
 2. **VERIFY SENDER**
    The reply must come from the contact's own email address. A different address → Outcome C (Task). Never merge.
@@ -305,14 +312,50 @@ Never send a missing-details email AND book in the same run. Never produce more 
 - Sender unknown or mismatched.
 - Service still unrecognized after clarification.
 - Address undeliverable, opted-out, or bounced.
+- **Tool or API failure** — cannot read email, cannot fetch services, permission error, any tool returning an error that blocks the booking.
 - Anything else unresolvable.
 
-**Create ONE Task** on the contact using `crm_insertTaskRecord`. Payload rules:
+**CRITICAL: Never just stop with an error message.** Every failure path MUST end with a Task. If you cannot complete the booking for any reason, create a Task with the error details so a human can follow up. No email trigger should end without either an appointment or a Task.
 
-- `Subject` — mandatory
-- `Who_Id_id` + `Who_Id_name` — the contact record. The `$se_module`/`id`/`name` trio is for relating a non-contact record; send it together or omit entirely (`$se_module` alone returns `INVALID_DATA`).
-- `Owner` — the contact's Owner **user ID**
-- `Due_Date` — `yyyy-MM-dd`
+**Create ONE Task** on the contact using `crm_insertTaskRecord`.
+
+### Task payload — CORRECT example
+
+```
+{
+  "Subject": "Reschedule request — Car cleaning — Sudev G",
+  "Who_Id_id": "39669000000945001",
+  "Who_Id_name": "Sudev G",
+  "Owner": "39669000000081013",
+  "Due_Date": "2026-07-10",
+  "Priority": "High",
+  "Status": "Not Started",
+  "Description": "Customer Sudev G (sudev.g@zohocorp.com, Contact ID 39669000000945001) requested rescheduling their Car cleaning appointment from Fri 10 Jul 2:00 PM to 4:00 PM. Address: 42 Lake View Street, Chennai.\n\nNext step: Open the appointment, verify availability at 4:00 PM, and reschedule or contact the customer."
+}
+```
+
+### Task payload rules
+
+- `Subject` — mandatory, descriptive
+- `Who_Id_id` + `Who_Id_name` — the contact's record ID and name. This links the task to the contact.
+- `Owner` — the contact's Owner **user ID** (from the contact record's `Owner.id` field). NOT the contact's record ID.
+- `Due_Date` — `yyyy-MM-dd` format
+- `Description` — self-contained task notes (see below)
+
+### WRONG — do NOT send `$se_module` for Contacts
+
+The `$se_module`/`id`/`name` trio is ONLY for linking a non-Contact record (e.g. a Deal). For Contacts, use `Who_Id_id` + `Who_Id_name` instead. Sending `$se_module: "Contacts"` returns `INVALID_DATA`.
+
+**Do NOT send:**
+```
+{
+  "$se_module": "Contacts",    ← WRONG — causes INVALID_DATA
+  "id": "39669000000945001",   ← WRONG — this is ambiguous (task id vs related record id)
+  "name": "Sudev G"            ← WRONG — use Who_Id_name instead
+}
+```
+
+### Task notes format
 
 **Task notes must be self-contained** (actionable without reading the email thread): full contact identity, exactly what the customer asked for, current state (what was done / what failed with exact error text), booking details if an appointment exists, a one-line exchange summary, and a concrete specific NEXT STEP (never a bare "handle manually").
 
@@ -433,7 +476,7 @@ Confirm the From address before going live. The tag name `"ZIA-agent(AppointPal)
 | List Services | Get service id, location, and member list — request only: `id, Service_Name, Location, Job_Sheet_Required, Members` |
 | Check Availability | Call `getUsersFreeOrBusyDetails` (Zoho Calendar) to check provider availability |
 | Get Emails of a Record | List a contact's email thread (to find CRM internal message_ids of earlier emails) |
-| `crm_getSpecificCrmEmailContent` | Fetch a single email's body — always pass hex message_id from list response; always pass contact Owner ID as user_id |
+| `crm_getSpecificCrmEmailContent` | Fetch a single email's body — always pass `message_id` and `user_id` from the `getemailsofarecord` list response |
 | Send Mail | Send ask email, confirmation, or handoff note |
 | Create Appointment | Write the booking (with Additional_Information stamp and `"ZIA-agent(AppointPal)"` tag) |
 | Update Appointment | Reschedule via minimal payload: `id` + `Appointment_Start_Time` (+ optional `Owner`, `Reschedule_Reason`, `Reschedule_Note`) |
@@ -448,8 +491,8 @@ Confirm the From address before going live. The tag name `"ZIA-agent(AppointPal)
 
 | Error | Cause | Fix |
 |-------|-------|-----|
-| "Do not have any email with this message id in user configured account" | Wrong user_id passed | Use the contact's Owner ID, not the agent's user ID |
-| "Invalid URL provided" when fetching email body | RFC 822 message_id passed directly (contains `< > @` or domain) | The correct message_id is a 64-char hex hash from the Get Emails list response; never use the trigger's `<...@domain.com>` value |
+| "Do not have any email with this message id in user configured account" | Wrong `user_id` passed | Always get `user_id` from the `getemailsofarecord` list response — never guess or use trigger values |
+| "Invalid URL provided" when fetching email body | Wrong `message_id` format (contains `< > @` or domain) | Always get `message_id` from the `getemailsofarecord` list response — never use values from the trigger payload |
 | Wrong email body fetched (previous email instead of current) | Matched wrong list entry | Match by subject + sender + recency to find the correct list entry |
 | Invalid provider | Owner not a service member | Pick an eligible member from the service |
 | Location mismatch | Appointment location ≠ service location | Match location to service setting |
@@ -463,7 +506,8 @@ Confirm the From address before going live. The tag name `"ZIA-agent(AppointPal)
 | Location mismatch on reschedule minimal payload | Extra fields resent, or stored record inconsistent | Omit Location/Address from update; if record inconsistent, Task |
 | "From address not allowed" on Send Mail | From address is not a configured/allowed org address | Config issue; never try alternate From addresses; Task |
 | `cvid` + `sort_by` conflict when listing appointments | Both parameters sent together | Drop `cvid`; filter by contact + `Status=Scheduled`, sort by `Appointment_Start_Time` |
-| Task creation fails | `$se_module` sent without id/name, or `Subject` missing, or `Owner` not a user ID | Fix payload; retry once. If still failing, no handoff note; flag loudly in run summary |
+| Task creation `INVALID_DATA` on `$se_module` | `$se_module: "Contacts"` sent — this field is only for non-Contact modules | Remove `$se_module`, `id`, `name` entirely; use `Who_Id_id` + `Who_Id_name` for Contacts. Retry once. |
+| Task creation fails (other) | `Subject` missing, or `Owner` not a valid user ID | Fix payload; retry once. If still failing, no handoff note; flag loudly in run summary |
 | Details taken from quoted history | Email body includes prior exchange below "On … wrote:" | Extract new content only (text above quoted blocks) |
 | `MANDATORY_NOT_FOUND` / `INVALID_DATA` (400) on appointment update | Missing or invalid appointment `id` | Re-fetch the appointment via Get Appointments to get the correct `id` |
 | Run ended with no outcome | All flows exhausted without booking, ask, or Task | Forbidden — apply fallbacks or create a Task; a genuine request must always have an outcome |

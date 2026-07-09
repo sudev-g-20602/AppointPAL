@@ -140,38 +140,24 @@ The **Appointment For** field is a multi-module lookup. Contacts is included by 
 
 ---
 
-## Provider Availability — User Unavailability
+## Provider Availability — Zoho Calendar Free/Busy Check
 
-Availability is determined by checking when a provider is **not** available. Each user can have unavailability windows (leave, blocked time) defined by a `from` and `to` time in ISO 8601 format.
+Availability is determined by calling `getUsersFreeOrBusyDetails` (Zoho Calendar), which returns busy periods for one or more users over a requested time range. A slot is confirmed free only if it falls entirely outside all busy periods returned.
 
-**Key fields:** `from`, `to`, `comments`, `user.name`, `user.id`, `id`
+**Tool:** `getUsersFreeOrBusyDetails` (Zoho Calendar)
 
-**Access rule:** Admin users can see all users' unavailability; non-admin users can only see their own.
+**Required parameters:**
+- Provider's user ID (email or CRM user ID)
+- Time range: start and end time (ISO 8601) covering the requested appointment slot
 
-**Booking rule:** A provider can be booked for a slot only if that slot falls entirely outside all of their unavailability windows. When the user says "any provider," the agent picks a service member with no unavailability covering the requested time.
-
-### User Unavailability API
-
-| Tool | Endpoint | Purpose |
-|------|----------|---------|
-| `crm_getUsersUnavailability` | `GET /crm/v8/settings/users_unavailability` | Fetch all users' unavailability (admin only) |
-| `crm_getUserUnavailabilityById` | `GET /crm/v8/settings/users_unavailability/{user_id}` | Fetch a specific user's unavailability |
-
-**API scope:** `ZohoCRM.settings.users_unavailability.READ`
-
-**Response:** Array of `users_unavailability` records, each with `from` (ISO 8601), `to` (ISO 8601), `comments`, `id`, and `user` (`name`, `id`, optional `zuid`). Paginated via `info` object (`per_page`, `page`, `count`, `more_records`).
-
-**Optional parameters:**
-- `filters` — JSON to filter by time. Comparators: `equals`, `between`, `greater_than`, `less_than`. Fields: `from`, `to`.
-- `include_inner_details=user.zuid` — include ZUID in response
-- `group_ids`, `role_ids`, `territory_ids` — comma-separated IDs to filter by group, role, or territory
-
-**HTTP 204** means no unavailability records exist — the provider has no blocked time. This is valid, not an error.
+**Booking rule:** A provider can be booked for a slot only if that slot falls entirely outside all busy periods returned by `getUsersFreeOrBusyDetails`. When the user says "any provider," the agent picks a service member who is free at the requested time.
 
 **Availability check procedure:**
-1. Call `crm_getUserUnavailabilityById` with the provider's user ID.
-2. If HTTP 204 → no blocked time; provider passes Layer 1.
-3. If HTTP 200 → compare each `[from, to)` window against the requested `[start, end)` slot. Any overlap → provider is NOT available.
+1. Call `getUsersFreeOrBusyDetails` with the provider's user ID and the requested time range.
+2. If no busy periods overlap the requested slot → provider is available.
+3. If any busy period overlaps → provider is NOT available. Try another eligible member or ask for a different time.
+
+**Do NOT use `crm_getUsersUnavailability` or `crm_getUserUnavailabilityById`** — these legacy CRM User Unavailability APIs are not in the agent's tool set. Always use `getUsersFreeOrBusyDetails` (Zoho Calendar) for all availability checks.
 
 ---
 
