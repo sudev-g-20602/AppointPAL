@@ -136,7 +136,7 @@ The agent's knowledge base is the eight source files below, all included with th
 
 **8. `kb_industry_scenarios.md` — Industry playbook.** Context, typical services, booking constraints, and example flows for five industries — automobile service, wellness & beauty, home services, healthcare & professional consultation, and field services — plus cross-industry patterns (ambiguous service names, duration questions, discount requests, booking for someone else, angry customers).
 
-**Workdrive link : [AppointPal_Knowledge_Base](https://workdrive.zoho.in/folder/5p3ayc5ebe604415044d3b47eb112be19b24f)
+**Workdrive link : [AppointPal_Knowledge_Base](https://workdrive.zoho.in/folder/5p3ayc5ebe604415044d3b47eb112be19b24f)**
 
 ### Custom tools
 
