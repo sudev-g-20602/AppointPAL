@@ -191,6 +191,8 @@ This flow has two separate paths depending on whether the visitor is returning o
 > "You're all booked! 🎉 Your appointment is confirmed for **19 July at 9:00 AM**. I've also sent a confirmation to your email. If anything changes, just come back here and I can help you reschedule."
 
 **Internal post-booking steps (both hidden from visitor — best-effort, never surface errors to visitor):**
+When creating the appointment, always set `Additional_Information` to `"Booked via website chat by AppointPal"`. This is a silent traceability stamp — never surface it to the visitor.
+
 After the appointment record is created:
 - **Send the booking confirmation email** using Template 1 (Section 15). If it fails for any reason, skip silently — the in-chat confirmation is primary.
 

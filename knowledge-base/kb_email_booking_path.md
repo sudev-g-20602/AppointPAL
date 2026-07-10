@@ -14,7 +14,7 @@ Every inbound customer email is read by the agent. A complete, valid booking req
 **What the email path never does:**
 - Guess a missing detail
 - Send any email other than a missing-details request, booking confirmation, or a one-line handoff note (reschedule/cancellation/human-handoff)
-- Auto-execute reschedules or cancellations
+- Auto-execute cancellations (reschedules are handled automatically; cancellations always escalate to a Task)
 - Leave a genuine request with no outcome
 
 **Relationship to conversational path:** this path obeys every booking domain rule (customer resolution, service lookup, provider selection, availability, appointment creation) defined in the shared booking domain. The only difference is who confirms: the conversational path has a human confirming each write; the email path substitutes the required-to-book checklist plus the limited ask-loop defined here.
@@ -342,16 +342,48 @@ Never send a missing-details email AND book in the same run. Never produce more 
 - `Due_Date` — `yyyy-MM-dd` format
 - `Description` — self-contained task notes (see below)
 
-### WRONG — do NOT send `$se_module` for Contacts
+### PRE-FLIGHT CHECK — run BEFORE every `crm_insertTaskRecord` call
 
-The `$se_module`/`id`/`name` trio is ONLY for linking a non-Contact record (e.g. a Deal). For Contacts, use `Who_Id_id` + `Who_Id_name` instead. Sending `$se_module: "Contacts"` returns `INVALID_DATA`.
+The tool has 9 parameters. For Contact-linked tasks, you must only fill in 8 and leave 1 blank.
 
-**Do NOT send:**
+**FILL IN these parameters:**
+| Parameter | Value |
+|-----------|-------|
+| `Subject` | Descriptive subject line |
+| `Who_Id_id` | Contact record ID |
+| `Who_Id_name` | Contact name |
+| `Owner` | Contact's Owner **user ID** (from `Owner.id`) |
+| `Due_Date` | `yyyy-MM-dd` |
+| `Priority` | `"High"` |
+| `Status` | `"Not Started"` |
+| `Description` | Full context for the human |
+
+**LEAVE BLANK — do NOT fill in these 3 parameters (not even with empty string):**
+| Parameter | Why |
+|-----------|-----|
+| `$se_module` | Only for Deals/non-Contact modules. Sending ANY value causes INVALID_DATA (400). |
+| `id` | Part of the `$se_module`/`id`/`name` trio. If `id` is present without `$se_module`, the API demands `$se_module` → MANDATORY_NOT_FOUND (400). The contact is linked via `Who_Id_id` instead. |
+| `name` | Part of the `$se_module`/`id`/`name` trio. Same error as `id`. The contact is linked via `Who_Id_name` instead. |
+
+These three parameters (`$se_module`, `id`, `name`) are a linked trio in the CRM API. If ANY of the three is present, the API expects ALL three. Since `$se_module: "Contacts"` is invalid, the ONLY solution is to leave ALL THREE blank.
+
+**Failure history — 7 failures across 3 executions:**
+- `$se_module: "Contacts"` + `id` + `name` → `INVALID_DATA` (400)
+- `$se_module: ""` + `id` + `name` → `MANDATORY_NOT_FOUND` (400)
+- `$se_module` omitted but `id` + `name` present → `MANDATORY_NOT_FOUND` for `$se_module` (400) — API sees `id`/`name` and demands `$se_module`
+- All three omitted → **SUCCESS** — this is the ONLY approach that works
+
+**CORRECT — only these fields:**
 ```
 {
-  "$se_module": "Contacts",    ← WRONG — causes INVALID_DATA
-  "id": "39669000000945001",   ← WRONG — this is ambiguous (task id vs related record id)
-  "name": "Sudev G"            ← WRONG — use Who_Id_name instead
+  "Subject": "...",
+  "Who_Id_id": "39669000000945001",
+  "Who_Id_name": "Sudev G",
+  "Owner": "39669000000081013",
+  "Due_Date": "2026-07-10",
+  "Priority": "High",
+  "Status": "Not Started",
+  "Description": "..."
 }
 ```
 
@@ -369,13 +401,133 @@ One Task per request. Every genuine request must end in exactly one outcome: an 
 
 ---
 
-## RESCHEDULE & CANCELLATION REQUESTS VIA EMAIL
+## RESCHEDULE FLOW (EMAIL PATH)
 
-**Never auto-execute.** Reschedule and cancellation requests received via email are always escalated to a Task (Outcome C). They require locating and confirming an existing appointment, and cancelled/completed appointments cannot be changed — this is too complex and error-prone for automated email handling.
+When the email is classified as **(C) RESCHEDULE REQUEST** in Step 2, follow this flow. Cancellation requests are NOT reschedules — cancellations always go to Outcome C (Task).
 
-Always → Outcome C (Task) with the request type and any new desired time.
+### Reschedule Step 1 — Extract Reschedule Details
 
-You may send one brief note to the customer saying the request has been passed to the team. End with the email signature.
+From the email body (new content only), extract:
+
+| Detail | Notes |
+|--------|-------|
+| Service | Which service appointment to reschedule (if stated) |
+| Original date/time | When the existing appointment is (if stated) |
+| New date/time | When the customer wants to move it to |
+
+If no new date/time is stated → Outcome B (ask for the new time; counts toward the 2-ask cap).
+
+### Reschedule Step 2 — Find the Existing Appointment
+
+Call `crm_getRecords` with `module_api_name` = `"Appointments__s"` and `fields` = `"id,Appointment_Name,Appointment_Start_Time,Service_Name,Owner,Status,Appointment_For"`.
+
+Filter for appointments where:
+- `Appointment_For` matches this contact
+- `Status` = `"Scheduled"`
+- If the customer named a service → `Service_Name` matches
+- If the customer stated an original time → `Appointment_Start_Time` matches
+
+**Results:**
+- **Exactly one Scheduled match** → continue to Step 3.
+- **Multiple Scheduled matches** → narrow by service name, then by original time. If still ambiguous → send ONE ask email listing the matches and asking which one to reschedule (Outcome B; counts toward the 2-ask cap).
+- **No Scheduled match** → the appointment may be Cancelled, Completed, or non-existent → Outcome C (Task). Include what was searched in the task notes.
+- **Lookup fails** (400, timeout, or any error) → Outcome C (Task). Never guess the appointment.
+
+### Reschedule Step 3 — Validate the New Time
+
+1. Resolve relative dates ("Friday", "next week") to a concrete date using today's date.
+2. The new time must be **in the future**. If not → Outcome B (ask for a future time).
+3. The new time must **differ** from the current `Appointment_Start_Time`. If identical → inform the customer the appointment is already at that time; stop (no change needed, no Task).
+
+### Reschedule Step 4 — Check Provider Availability
+
+Call `getUsersFreeOrBusyDetails` (Zoho Calendar) to check the current Owner's availability at the new time.
+
+- **Free** → continue to Step 5.
+- **Busy** → send ONE ask email informing the customer that the requested time is not available and asking for a different time (Outcome B; counts toward the 2-ask cap). Do not reveal why the provider is unavailable. Do not silently swap the provider — the existing appointment's Owner stays unless the customer explicitly asks for a change.
+- **Availability check fails** → attempt the update anyway (Step 5); let the server validate. If rejected → Outcome C (Task).
+
+### Reschedule Step 5 — Update the Appointment (Minimal Payload)
+
+**STRICT ORDER: update the appointment FIRST → send confirmation email SECOND.**
+
+Call Update Appointment with a **MINIMAL** payload — only these fields:
+- `id` — the appointment record ID (mandatory)
+- `Appointment_Start_Time` — the new date/time in ISO 8601 (mandatory)
+- `Reschedule_Reason` — `"Customer requested reschedule via email"`
+- `Reschedule_Note` — brief note with original and new times, e.g. `"Moved from Fri 10 Jul 2:00 PM to 4:00 PM per customer email"`
+
+**Do NOT resend:** `Location`, `Address`, `Service_Name`, `Owner`, or any other untouched field. Resending them re-triggers full record validation and causes `DEPENDENT_FIELD_*` errors.
+
+**Error handling:**
+| Error | Cause | Action |
+|-------|-------|--------|
+| `NOT_ALLOWED` (403) | Appointment is Cancelled or Completed | Cannot reschedule → Outcome C (Task) |
+| `DEPENDENT_FIELD_UNCHANGED` (400) | New time = existing time | Inform customer; stop (no change needed) |
+| `DEPENDENT_FIELD_MISSING` (400) | `Appointment_Start_Time` missing | Fix payload, retry once |
+| `MANDATORY_NOT_FOUND` / `INVALID_DATA` (400) | Invalid appointment `id` | Re-fetch via Get Appointments, retry once |
+| Any other error | — | Retry once with corrected payload. If still failing → Outcome C (Task) |
+
+### Reschedule Step 6 — Confirm and Tag
+
+1. **Send ONE confirmation email** in the same thread as the original request:
+   - Confirm the reschedule with old time → new time, service name, and provider name.
+   - End with the email signature: `ZIA-agent(AppointPal)`
+   - Nothing else.
+2. **Tag** the appointment with `"ZIA-agent(AppointPal)"` (best-effort; use the standard tag workflow: get → create if absent → associate).
+3. **If the confirmation email fails** (send rejected, opt-out, bounce, From-address error) → create a Task so the customer is not left uninformed. The reschedule stands — do not undo it. Task next step: "Appointment rescheduled successfully but the confirmation email was not sent (`<reason>`). Contact the customer to confirm."
+4. **Stop.** One outcome per run.
+
+---
+
+## CANCELLATION REQUESTS VIA EMAIL
+
+**Never auto-cancel.** Cancellation requests received via email are always escalated to a Task (Outcome C). Cancellations are irreversible and require explicit human confirmation. The agent MUST create a Task and send a handoff note — a text response saying "I'll route it to the team" is NOT an outcome. You must call the actual tools.
+
+**MUST-COMPLETE: Execute ALL steps below. Do not stop after reading the email — continue calling tools until both the Task and the handoff note are done.**
+
+### Cancellation Step 1 — Create the Task
+
+Call `crm_insertTaskRecord`. Refer to the PRE-FLIGHT CHECK above — leave `$se_module`, `id`, and `name` BLANK (the trio rule). **All 8 fields below are required — do not skip any, especially `Owner` and `Description`:**
+
+```
+{
+  "Subject": "Cancellation request — <service name> — <customer name>",
+  "Who_Id_id": "<contact record ID from trigger>",
+  "Who_Id_name": "<contact name>",
+  "Owner": "<contact Owner user ID — get from contact record's Owner.id field>",
+  "Due_Date": "<today's date in yyyy-MM-dd>",
+  "Priority": "High",
+  "Status": "Not Started",
+  "Description": "Customer <name> (<email>, Contact ID <id>) requested cancellation of their <service> appointment on <date/time>. Reason: <stated reason or 'not provided'>.\n\nNext step: Open the appointment, confirm with the customer, and cancel if appropriate."
+}
+```
+
+**If Task creation fails:** retry once with a corrected payload addressing the specific error. If still failing, flag the failure loudly in the run summary — but do NOT skip the handoff note.
+
+### Cancellation Step 2 — Tag the Task (IMMEDIATELY after Task creation — do NOT skip to the email)
+
+**Complete ALL three tag calls before moving to Step 3.** Do not call `crm_getEmailsOfRecord` or `crm_getSpecificCrmEmailContent` or any email-related tool until tagging is done.
+
+1. Call `crm_getTags` with `module` = `"Tasks"`.
+2. If tag not found → call `crm_createTags` with `module` = `"Tasks"`, `name` = `"ZIA-agent(AppointPal)"`.
+3. **Call `crm_postAddTagsWithId`** with `module` = `"Tasks"`, `id` = the Task record ID (from Step 1's response), `name` = `"ZIA-agent(AppointPal)"`. This step is the one that actually associates the tag — `crm_getTags` only checks if the tag exists, it does NOT apply it.
+
+Tag failure is best-effort — it never blocks the handoff note. But you MUST call `crm_postAddTagsWithId` — skipping it means the tag is never applied.
+
+### Cancellation Step 3 — Send Handoff Note
+
+Send ONE brief email to the customer IN THE SAME THREAD:
+- Acknowledge their cancellation request.
+- Let them know a team member will follow up.
+- Do NOT mention what is missing or why it couldn't be done automatically.
+- End with the email signature: `ZIA-agent(AppointPal)`
+
+**If the handoff note fails:** the Task still stands. Do not retry the email. Stop.
+
+### Cancellation Step 4 — Stop
+
+One outcome per run. The Task + handoff note together form the complete cancellation outcome.
 
 ---
 
@@ -427,7 +579,7 @@ Optional: `Remind_At` (unit + period — supply both or neither). There is no en
 - Never book unless every checklist condition passes on stated (not guessed) details.
 - Never run the checklist before extracting all details from the email body.
 - Never fabricate a missing detail.
-- Never send any email other than: a missing-details request, a booking confirmation, or a one-line handoff note (reschedule, cancellation, or human-handoff request).
+- Never send any email other than: a missing-details request, a booking confirmation, a reschedule confirmation, or a one-line handoff note (cancellation or human-handoff request).
 - Every outbound email must end with the signature: `ZIA-agent(AppointPal)`
 - Never promise or imply a booking exists before it is created.
 - Never exceed 2 ask emails per request; never send more than one email per inbound message.
@@ -460,7 +612,7 @@ Optional: `Remind_At` (unit + period — supply both or neither). There is no en
 | Sender verification | Prevents a third party steering someone else's booking |
 | `"ZIA-agent(AppointPal)"` tag | Every auto-created appointment and task is tagged for after-the-fact filtering and review |
 | Additional_Information stamp | Records which agent created the appointment for traceability |
-| Constrained email surface | Only three permitted email types with fixed content rules |
+| Constrained email surface | Only four permitted email types (missing-details ask, booking confirmation, reschedule confirmation, cancellation/handoff note) with fixed content rules |
 | Task safety net | No genuine request is silently dropped |
 
 Confirm the From address before going live. The tag name `"ZIA-agent(AppointPal)"` is applied to both Appointments and Tasks — these are separate per-module tag objects requiring independent existence checks.

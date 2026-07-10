@@ -222,12 +222,12 @@ Key fields when reading an appointment:
 | Provider | `Owner` | Provider's user ID; must be a member of the service |
 | Location | `Location` | Must match the service: `"Client Address"` or `"Business Address"` |
 | Address | `Address` | Mandatory only when `Location = "Client Address"` |
+| Additional info | `Additional_Information` | **Always set to:** `"Booked via CRM by AppointPal"` — traceability stamp. Never leave blank. |
 
 **Optional fields:**
 
 | Field | Tool parameter | Notes |
 |-------|---------------|-------|
-| Additional info | `Additional_Information` | Staff notes on the booking |
 | Reminder | `Remind_At` | Requires both `unit` (integer) and `period` (`"minutes"`, `"hours"`, `"days"`) — supply both or neither |
 | Tag | *(applied post-create via tag workflow)* | Set to `"ZIA-agent(AppointPal)"` — get → create if absent → associate (see step 13 above) |
 
